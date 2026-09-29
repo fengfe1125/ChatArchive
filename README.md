@@ -17,7 +17,7 @@ ChatArchive (聊天档案) is a native macOS app for backing up, browsing, and o
 ## What you can do
 
 - **Bring your history together.** Browse Claude account exports in Chat and project-based Claude Code conversations in Code. Search across both sources.
-- **Read without repeated clicks.** Scroll to load more messages automatically. Use the message rail to preview and jump to a specific message, including one that has not loaded yet.
+- **Read without repeated clicks.** Scroll up or down to load more messages automatically. Use the message rail to preview and jump to a specific message, including one that has not loaded yet.
 - **Keep context intact.** Switch between saved conversation branches and answer versions. Expand saved thinking, tool records, and extracted attachment text when available.
 - **Revisit artifacts.** Open saved HTML artifacts in a side panel, try their embedded interactions, inspect the source, switch versions, or save the HTML.
 - **Organize locally.** Rename, star, and archive conversations. Records without exported body text live in a separate collection, outside the regular chat list.

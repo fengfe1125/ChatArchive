@@ -8,30 +8,37 @@ struct ConversationView:View {
     @State private var jumping=false
     @State private var navigationError:String?
     @State private var nearBottom=false
+    @State private var nearTop=false
+    @State private var readingUp=false
     private var currentLocation:String?{locations.last(where:{$0.offset <= (Int(position ?? "") ?? model.messages.first?.index ?? 0)})?.id}
     private func loadAhead(){
-        guard nearBottom,!model.loadingMessages,model.messageError==nil,model.messageNext != nil else{return}
-        model.perform{try await model.moreMessages()}
+        guard !model.loadingMessages,model.messageError==nil else{return}
+        if readingUp && nearTop && (model.messages.first?.index ?? 0)>0{model.perform{try await model.earlierMessages()}}
+        else if nearBottom && model.messageNext != nil{model.perform{try await model.moreMessages()}}
     }
-    private func jump(_ offset:Int){Task{jumping=true;defer{jumping=false};try? await model.jumpToMessage(offset);guard model.messages.first?.index==offset else{return};position=model.messages.first?.id}}
+    private func jump(_ offset:Int){readingUp=false;Task{jumping=true;defer{jumping=false};try? await model.jumpToMessage(offset);guard model.messages.first?.index==offset else{return};position=model.messages.first?.id}}
 
     var body:some View {
         VStack(spacing:0){
             HStack(spacing:0){
             ScrollView {LazyVStack(alignment:.leading,spacing:26){
                 if let row=model.active{Text("\(row.source=="code" ? row.project : "Chat · 未分类") · \(row.last_at?.prefix(10) ?? "时间未知")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)}
-                if let first=model.messages.first,first.index>0{Button("显示更早的消息"){jump(max(0,first.index-4))}.frame(maxWidth:.infinity)}
                 ForEach(model.messages){message in
                     HStack(alignment:.top){if message.role=="user"{Spacer(minLength:72)};VStack(alignment:.leading,spacing:12){if message.role != "user" && message.continuation != true {Label("Claude",systemImage:"sparkle").foregroundStyle(.secondary).font(.caption)};if message.segmented==true {Text(message.continuation==true ? "长消息 · 续段" : "长消息 · 分段显示").font(.caption).foregroundStyle(.secondary)};if message.plain==true {Text(message.text).textSelection(.enabled)}else{MarkdownBody(text:message.text).equatable()};ForEach(Array((message.media ?? []).enumerated()),id:\.offset){_,media in if let text=media.text,!text.isEmpty{DisclosureGroup(media.name ?? "附件提取文本"){Text(text).font(.system(.body,design:.monospaced)).textSelection(.enabled)}}else{Label((media.name ?? "附件")+" · 原附件未包含在备份中",systemImage:"doc.badge.ellipsis").font(.caption).foregroundStyle(.secondary)}};Button(message.segmented==true ? "复制这一段" : "复制",systemImage:"doc.on.doc"){copyText(message.text.isEmpty ? (message.media ?? []).compactMap(\.text).joined(separator:"\n") : message.text)}.labelStyle(.iconOnly).buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)}.frame(maxWidth:message.role=="user" ? 560:.infinity,alignment:.leading).padding(message.role=="user" ? 16 : 0).background(message.role=="user" ? Color.primary.opacity(0.055) : .clear,in:RoundedRectangle(cornerRadius:16))}.id(message.id)
                 }
                 if model.active?.content_available==false {Label("官方导出没有可恢复正文，仍可查看原始元数据。",systemImage:"doc.badge.exclamationmark").foregroundStyle(.secondary)}
                 if model.loadingMessages {ProgressView("正在加载对话…").frame(maxWidth:.infinity)}
                 if let error=model.messageError {Text(error).font(.callout).foregroundStyle(.red)}
-                if model.messageError != nil {Button("重试加载"){model.perform{try await model.moreMessages()}}.frame(maxWidth:.infinity)}
+                if model.messageError != nil {Button("重试加载"){model.perform{if readingUp{try await model.earlierMessages()}else{try await model.moreMessages()}}}.frame(maxWidth:.infinity)}
             }.padding(28).frame(maxWidth:850).frame(maxWidth:.infinity).scrollTargetLayout()}.scrollPosition(id:$position,anchor:.top)
             .onScrollGeometryChange(for:Bool.self){geometry in
                 geometry.contentSize.height-geometry.visibleRect.maxY < 900
             }action:{_,value in nearBottom=value}
+            .onScrollGeometryChange(for:CGFloat.self){$0.visibleRect.minY}action:{old,value in
+                nearTop=value<700
+                if value<old-1{readingUp=true}else if value>old+1{readingUp=false}
+                loadAhead()
+            }
             .onChange(of:nearBottom){_,_ in loadAhead()}
             .onChange(of:model.loadingMessages){_,loading in if !loading{loadAhead()}}
             .onChange(of:position){_,value in if let id=model.active?.id,let value{model.scrollIDs[id]=value;if model.previewPath==nil{UserDefaults.standard.set(model.scrollIDs,forKey:"scrollPositions")}}}

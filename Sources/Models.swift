@@ -264,6 +264,19 @@ extension ArchiveEngine {
             messageError=error.localizedDescription
         }
     }
+    func earlierMessages() async throws {
+        guard !loadingMessages,let id=active?.id,let first=messages.first?.index,first>0 else{return}
+        let generation=selectionGeneration;let offset=max(0,first-4)
+        loadingMessages=true;messageError=nil
+        defer{if generation==selectionGeneration{loadingMessages=false}}
+        do{
+            let data=try await engine.call("/native/messages?id=\(escape(id))&offset=\(offset)")
+            guard generation==selectionGeneration,!Task.isCancelled else{return}
+            var items=try decode([Message].self,data["items"] ?? [])
+            for i in items.indices{items[i].index=offset+i}
+            messages=items.filter{$0.index<first}+messages
+        }catch{if generation==selectionGeneration && !Task.isCancelled{messageError=error.localizedDescription}}
+    }
     func jumpToMessage(_ offset:Int) async throws {
         guard let id=active?.id else{return}
         selectionGeneration+=1;let generation=selectionGeneration

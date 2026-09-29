@@ -24,6 +24,8 @@ struct AccountTranscriptView:View {
     @State private var bottomRequest=0
     @State private var position:String?
     @State private var nearBottom=false
+    @State private var nearTop=false
+    @State private var readingUp=false
     @State private var locations:[MessageLocation]=[]
     @State private var jumpTarget:String?
 
@@ -38,7 +40,6 @@ struct AccountTranscriptView:View {
                 HStack(spacing:0){
                 ScrollView{
                     LazyVStack(alignment:.leading,spacing:28){
-                        if previous != nil{Button("显示更早的消息"){Task{await load(offset:previous ?? 0,prepend:true)}}.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).frame(maxWidth:.infinity).disabled(loading)}
                         if loading && messages.isEmpty{ProgressView("正在读取对话…").frame(maxWidth:.infinity).padding(32)}
                         ForEach(turns){turn in
                             turnView(turn).id(turn.id)
@@ -46,7 +47,7 @@ struct AccountTranscriptView:View {
                         if !related.isEmpty{
                             VStack(alignment:.leading,spacing:8){Text("这段对话中的作品").font(.caption).foregroundStyle(.secondary);ForEach(related){item in Button{onArtifact(item)}label:{HStack{Image(systemName:"doc.richtext").font(.title2);VStack(alignment:.leading,spacing:4){Text(item.title).font(.callout.weight(.medium));Text("点击打开作品").font(.caption).foregroundStyle(.secondary)};Spacer();Image(systemName:"arrow.up.right")}.padding(16).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:12)).overlay(RoundedRectangle(cornerRadius:12).stroke(Color.primary.opacity(0.1)))}.buttonStyle(.plain)}}
                         }
-                        if let error{Text(error).foregroundStyle(.red);Button("重试"){Task{await load(offset:messages.isEmpty ? -1 : next ?? 0)}}}
+                        if let error{Text(error).foregroundStyle(.red);Button("重试"){Task{await load(offset:messages.isEmpty ? -1 : readingUp ? previous ?? 0 : next ?? 0,prepend:readingUp && !messages.isEmpty)}}}
                         if loading && !messages.isEmpty{ProgressView().controlSize(.small).frame(maxWidth:.infinity)}
                         if messages.isEmpty && !loading && error==nil{ContentUnavailableView("导出中缺少正文",systemImage:"doc.questionmark",description:Text("这条记录只有标题、时间或附件信息。可从会话菜单核对原始记录。"))}
                         Color.clear.frame(height:1).id("bottom")
@@ -56,13 +57,18 @@ struct AccountTranscriptView:View {
                 .onScrollGeometryChange(for:Bool.self){geometry in
                     geometry.contentSize.height-geometry.visibleRect.maxY < 900
                 }action:{_,value in nearBottom=value}
+                .onScrollGeometryChange(for:CGFloat.self){$0.visibleRect.minY}action:{old,value in
+                    nearTop=value<700
+                    if value<old-1{readingUp=true}else if value>old+1{readingUp=false}
+                    loadAhead()
+                }
                 .onChange(of:nearBottom){_,_ in loadAhead()}
                 .onChange(of:loading){_,value in if !value{loadAhead()}}
                 .onChange(of:jumpTarget){_,value in if let value{proxy.scrollTo(value,anchor:.top)}}
                 .onChange(of:bottomRequest){_,_ in proxy.scrollTo("bottom",anchor:.bottom)}
                 .overlay(alignment:.bottomTrailing){Button{Task{if next != nil{await load(offset:-1,replace:true)};bottomRequest+=1}}label:{Image(systemName:"arrow.down").frame(width:32,height:32).background(.regularMaterial,in:Circle()).overlay(Circle().stroke(Color.primary.opacity(0.1)))}.buttonStyle(.plain).help("跳到最新消息").padding(18)}
                 if !locations.isEmpty{MessageNavigationRail(items:locations,current:locations.contains(where:{$0.id==position}) ? position : messages.last?.message_id,loading:loading){item in
-                    Task{await load(offset:item.offset,replace:true);guard messages.first?.index==item.offset else{return};jumpTarget=nil;jumpTarget=item.id;position=item.id}
+                    readingUp=false;Task{await load(offset:item.offset,replace:true);guard messages.first?.index==item.offset else{return};jumpTarget=nil;jumpTarget=item.id;position=item.id}
                 }}
                 }
             }
@@ -82,8 +88,9 @@ struct AccountTranscriptView:View {
         }
     }
     private func loadAhead(){
-        guard nearBottom,!loading,error==nil,let offset=next else{return}
-        Task{await load(offset:offset)}
+        guard !loading,error==nil else{return}
+        if readingUp && nearTop,let offset=previous{Task{await load(offset:offset,prepend:true)}}
+        else if nearBottom,let offset=next{Task{await load(offset:offset)}}
     }
     private func turnView(_ turn:SavedTurn)->some View {
         HStack(alignment:.top){if turn.role=="user"{Spacer(minLength:72)}

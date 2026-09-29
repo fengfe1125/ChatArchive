@@ -45,6 +45,22 @@ import Foundation
         engine.finish(6,"target 120");try await newer.value
         engine.finish(5,"stale target 80");try await jump.value
         precondition(subject.messages.first?.index==120 && subject.messages.first?.text=="target 120")
+        let previous=Task {try await subject.earlierMessages()}
+        while engine.requests.count<8{await Task.yield()}
+        try await subject.earlierMessages()
+        precondition(engine.requests.count==8,"Duplicate earlier-page request")
+        precondition(engine.requests[7].0.contains("offset=116"))
+        engine.requests[7].1.resume(returning:["items":(0..<4).map{["role":"assistant","text":"previous \($0)"]},"next_offset":120])
+        try await previous.value
+        precondition(subject.messages.map(\.index)==[116,117,118,119,120])
+        precondition(subject.messages.last?.text=="target 120" && subject.messageNext==nil,"Prepending replaced current content or changed forward cursor")
+        let stalePrevious=Task{try await subject.earlierMessages()}
+        while engine.requests.count<9{await Task.yield()}
+        let other=Task{try await subject.openSession(row("D"))}
+        while engine.requests.count<10{await Task.yield()}
+        engine.finish(9,"new D");try await other.value
+        engine.finish(8,"stale history");try await stalePrevious.value
+        precondition(subject.messages.map(\.text)==["new D"])
         print("PASS: rapid A → B → A ignores stale responses; failed pages retry; duplicate page requests suppressed; rapid navigation keeps latest target")
     }
 }
