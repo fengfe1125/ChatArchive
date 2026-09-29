@@ -4,23 +4,50 @@ import AppKit
 struct ConversationView:View {
     @EnvironmentObject var model:ArchiveModel
     @State private var position:String?
+    @State private var locations:[MessageLocation]=[]
+    @State private var jumping=false
+    @State private var navigationError:String?
+    @State private var nearBottom=false
+    private var currentLocation:String?{locations.last(where:{$0.offset <= (Int(position ?? "") ?? model.messages.first?.index ?? 0)})?.id}
+    private func loadAhead(){
+        guard nearBottom,!model.loadingMessages,model.messageError==nil,model.messageNext != nil else{return}
+        model.perform{try await model.moreMessages()}
+    }
+    private func jump(_ offset:Int){Task{jumping=true;defer{jumping=false};try? await model.jumpToMessage(offset);guard model.messages.first?.index==offset else{return};position=model.messages.first?.id}}
+
     var body:some View {
         VStack(spacing:0){
+            HStack(spacing:0){
             ScrollView {LazyVStack(alignment:.leading,spacing:26){
                 if let row=model.active{Text("\(row.source=="code" ? row.project : "Chat · 未分类") · \(row.last_at?.prefix(10) ?? "时间未知")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)}
+                if let first=model.messages.first,first.index>0{Button("显示更早的消息"){jump(max(0,first.index-4))}.frame(maxWidth:.infinity)}
                 ForEach(model.messages){message in
-                    HStack(alignment:.top){if message.role=="user"{Spacer(minLength:35)};VStack(alignment:.leading,spacing:12){if message.role != "user" && message.continuation != true {Label("Claude",systemImage:"sparkle").foregroundStyle(.secondary).font(.caption)};if message.segmented==true {Text(message.continuation==true ? "长消息 · 续段" : "长消息 · 分段显示").font(.caption).foregroundStyle(.secondary)};if message.plain==true {Text(message.text).textSelection(.enabled)}else{MarkdownBody(text:message.text)};ForEach(Array((message.media ?? []).enumerated()),id:\.offset){_,media in if let text=media.text,!text.isEmpty{DisclosureGroup(media.name ?? "附件提取文本"){Text(text).font(.system(.body,design:.monospaced)).textSelection(.enabled)}}else{Label((media.name ?? "附件")+" · 原附件未包含在备份中",systemImage:"doc.badge.ellipsis").font(.caption).foregroundStyle(.secondary)}};Button(message.segmented==true ? "复制这一段" : "复制",systemImage:"doc.on.doc"){copyText(message.text.isEmpty ? (message.media ?? []).compactMap(\.text).joined(separator:"\n") : message.text)}.labelStyle(.iconOnly).buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)}.padding(message.role=="user" ? 16 : 0).background(message.role=="user" ? Color(nsColor:.controlBackgroundColor) : .clear,in:RoundedRectangle(cornerRadius:16));if message.role != "user"{Spacer(minLength:0)}}.id(message.id)
+                    HStack(alignment:.top){if message.role=="user"{Spacer(minLength:72)};VStack(alignment:.leading,spacing:12){if message.role != "user" && message.continuation != true {Label("Claude",systemImage:"sparkle").foregroundStyle(.secondary).font(.caption)};if message.segmented==true {Text(message.continuation==true ? "长消息 · 续段" : "长消息 · 分段显示").font(.caption).foregroundStyle(.secondary)};if message.plain==true {Text(message.text).textSelection(.enabled)}else{MarkdownBody(text:message.text).equatable()};ForEach(Array((message.media ?? []).enumerated()),id:\.offset){_,media in if let text=media.text,!text.isEmpty{DisclosureGroup(media.name ?? "附件提取文本"){Text(text).font(.system(.body,design:.monospaced)).textSelection(.enabled)}}else{Label((media.name ?? "附件")+" · 原附件未包含在备份中",systemImage:"doc.badge.ellipsis").font(.caption).foregroundStyle(.secondary)}};Button(message.segmented==true ? "复制这一段" : "复制",systemImage:"doc.on.doc"){copyText(message.text.isEmpty ? (message.media ?? []).compactMap(\.text).joined(separator:"\n") : message.text)}.labelStyle(.iconOnly).buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)}.frame(maxWidth:message.role=="user" ? 560:.infinity,alignment:.leading).padding(message.role=="user" ? 16 : 0).background(message.role=="user" ? Color.primary.opacity(0.055) : .clear,in:RoundedRectangle(cornerRadius:16))}.id(message.id)
                 }
                 if model.active?.content_available==false {Label("官方导出没有可恢复正文，仍可查看原始元数据。",systemImage:"doc.badge.exclamationmark").foregroundStyle(.secondary)}
                 if model.loadingMessages {ProgressView("正在加载对话…").frame(maxWidth:.infinity)}
                 if let error=model.messageError {Text(error).font(.callout).foregroundStyle(.red)}
-                if model.messageNext != nil && !model.loadingMessages {Button(model.messageError == nil ? "继续加载对话" : "重试加载"){model.perform{try await model.moreMessages()}}.frame(maxWidth:.infinity)}
+                if model.messageError != nil {Button("重试加载"){model.perform{try await model.moreMessages()}}.frame(maxWidth:.infinity)}
             }.padding(28).frame(maxWidth:850).frame(maxWidth:.infinity).scrollTargetLayout()}.scrollPosition(id:$position,anchor:.top)
+            .onScrollGeometryChange(for:Bool.self){geometry in
+                geometry.contentSize.height-geometry.visibleRect.maxY < 900
+            }action:{_,value in nearBottom=value}
+            .onChange(of:nearBottom){_,_ in loadAhead()}
+            .onChange(of:model.loadingMessages){_,loading in if !loading{loadAhead()}}
             .onChange(of:position){_,value in if let id=model.active?.id,let value{model.scrollIDs[id]=value;if model.previewPath==nil{UserDefaults.standard.set(model.scrollIDs,forKey:"scrollPositions")}}}
             .onChange(of:model.active?.id){_,id in position=id.flatMap{model.scrollIDs[$0]}}
+            if !locations.isEmpty{MessageNavigationRail(items:locations,current:currentLocation,loading:jumping){item in jump(item.offset)}}
+            }
+            if let navigationError{Text(navigationError).font(.caption).foregroundStyle(.secondary)}
             Divider()
             HStack{VStack(alignment:.leading,spacing:5){Text("历史档案只读").foregroundStyle(.secondary);Text("原文保存在你选择的档案目录").font(.caption).foregroundStyle(.tertiary)};Spacer();Button {if let row=model.active{model.pendingImports=[row.id];model.confirmImport=true}}label:{Label(["present","archived"].contains(model.active?.status ?? "") ? "已在 Codex" : "导入 Codex 后续聊",systemImage:"arrow.up.right")}.buttonStyle(.borderedProminent).disabled(model.active?.readable != true || ["present","archived"].contains(model.active?.status ?? "") || model.taskRunning)}.padding(20)
         }.background(Color(nsColor:.textBackgroundColor))
+        .task(id:model.active?.id){
+            locations=[];navigationError=nil
+            guard let id=model.active?.id else{return}
+            do{let data=try await model.engine.call("/native/reading-navigation?id=\(model.escape(id))");try Task.checkCancellation();locations=try decode([MessageLocation].self,data["items"] ?? [])}
+            catch is CancellationError{}catch{navigationError="消息目录读取失败："+error.localizedDescription}
+        }
     }
 }
 struct MarkdownBlock:Identifiable {let id:Int;let kind:String;let text:String;let language:String}
@@ -39,7 +66,7 @@ func markdownBlocks(_ text:String)->[MarkdownBlock] {
         index+=1
     };flush();return output
 }
-struct MarkdownBody:View {
+struct MarkdownBody:View,Equatable {
     let text:String
     var body:some View {VStack(alignment:.leading,spacing:14){ForEach(markdownBlocks(text)){block in switch block.kind {
         case "code":VStack(alignment:.leading,spacing:8){HStack{Text(block.language.isEmpty ? "代码" : block.language).font(.caption).foregroundStyle(.secondary);Spacer();Button("复制"){copyText(block.text)}.buttonStyle(.borderless).font(.caption)};ScrollView(.horizontal){Text(block.text).font(.system(size:12,design:.monospaced)).textSelection(.enabled).fixedSize(horizontal:true,vertical:false)}}.padding(12).background(Color(nsColor:.controlBackgroundColor),in:RoundedRectangle(cornerRadius:8))

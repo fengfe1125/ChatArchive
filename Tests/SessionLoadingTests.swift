@@ -37,6 +37,14 @@ import Foundation
         precondition(engine.requests.count==5, "Duplicate pagination request")
         engine.finish(4,"retried C");try await retry.value
         precondition(subject.messages.map(\.text)==["retried C"] && subject.messageError==nil && !subject.loadingMessages)
-        print("PASS: rapid A → B → A ignores stale responses; failed pages retry; duplicate page requests suppressed")
+        let jump=Task { try await subject.jumpToMessage(80) }
+        while engine.requests.count<6 { await Task.yield() }
+        precondition(engine.requests[5].0.contains("offset=80"))
+        let newer=Task { try await subject.jumpToMessage(120) }
+        while engine.requests.count<7 { await Task.yield() }
+        engine.finish(6,"target 120");try await newer.value
+        engine.finish(5,"stale target 80");try await jump.value
+        precondition(subject.messages.first?.index==120 && subject.messages.first?.text=="target 120")
+        print("PASS: rapid A → B → A ignores stale responses; failed pages retry; duplicate page requests suppressed; rapid navigation keeps latest target")
     }
 }

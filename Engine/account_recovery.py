@@ -42,7 +42,7 @@ def branch_paths(messages):
     return sorted(paths, key=lambda p: p['timestamp'], reverse=True)
 
 
-def account_page(catalog, session_id, offset=0, branch=''):
+def account_page(catalog, session_id, offset=0, branch='', index_only=False):
     from archive_core import _account_message, _reading_parts
     row = catalog.get(session_id)
     if row['source'] != 'account' or not row['valid_hash']:
@@ -60,9 +60,24 @@ def account_page(catalog, session_id, offset=0, branch=''):
     if selected:
         nodes = {m['uuid']:m for m in messages}
         messages = [nodes[key] for key in selected['nodes']]
+    original_messages = original.get('chat_messages') or original.get('messages') or []
+    siblings = {}
+    for message in original_messages:
+        if message.get('uuid') and message.get('parent_message_uuid'):
+            siblings.setdefault(message['parent_message_uuid'], []).append(message)
+    def metadata(m, ordinal):
+        alternatives=siblings.get(m.get('parent_message_uuid'), [])
+        versions=[]
+        for alternate in alternatives:
+            target=next((p for p in paths if alternate['uuid'] in p['nodes']),None)
+            if target:versions.append({'id':target['id'], 'title':alternate.get('created_at',''), 'message_id':alternate['uuid']})
+        return {'message_id':str(m.get('uuid') or f'record-{ordinal}'),
+                'versions':versions if len(versions)>1 else [],
+                'version_index':next((i for i,v in enumerate(versions) if v['message_id']==m.get('uuid')),0)}
     # Preserve block order in the native reader, including text between tools.
     def events():
-        for m in messages:
+        for ordinal,m in enumerate(messages):
+            meta=metadata(m,ordinal)
             content = m.get('content')
             if isinstance(content, list) and content:
                 for block in content:
@@ -70,16 +85,38 @@ def account_page(catalog, session_id, offset=0, branch=''):
                     if isinstance(block, dict) and block.get('type') == 'injected_prompt_block':
                         continue
                     event = _account_message({**m, 'content':[block], 'text':'', 'attachments':[], 'files':[]})
-                    if event: yield event
+                    if event: yield {**event, **meta}
                 extras = _account_message({**m, 'content':[], 'text':''})
-                if extras: yield extras
+                if extras: yield {**extras, **meta}
             else:
                 event = _account_message(m)
-                if event: yield event
+                if event: yield {**event, **meta}
     from itertools import islice
-    parts = (part for event in events() for part in _reading_parts(event) if part['text'] or part.get('media'))
-    page = list(islice(parts, max(0, offset), max(0, offset)+9))
-    return {'items':page[:8], 'next_offset':offset+8 if len(page)>8 else None,
+    parts = ({**part, 'message_id':event['message_id'], 'versions':event['versions'], 'version_index':event['version_index']} for event in events() for part in _reading_parts(event) if part['text'] or part.get('media'))
+    if index_only:
+        entries=[]; seen={}; has_text=set()
+        for position,part in enumerate(parts):
+            key=part['message_id']
+            if key in seen:
+                if part['text'] and key not in has_text:
+                    entries[seen[key]]['preview']=' '.join(part['text'].split())[:100];has_text.add(key)
+                continue
+            seen[key]=len(entries)
+            if part['text']:has_text.add(key)
+            preview=part['text'] or next((m.get('name','附件') for m in part.get('media',[])), '消息')
+            entries.append({'id':key,'offset':position,'role':part['role'],'preview':' '.join(preview.split())[:100]})
+        return {'items':entries}
+    if offset < 0:
+        from collections import deque
+        tail=deque(maxlen=8); total=0
+        for part in parts:tail.append(part);total+=1
+        offset=max(0,total-len(tail));page=list(tail)
+    else:
+        page = list(islice(parts, offset, offset+9))
+    artifact_items=artifacts(catalog.account_dir)['items'] if hasattr(catalog,'account_dir') else []
+    serialized=json.dumps(original,ensure_ascii=False)
+    related=[a for a in artifact_items if a['id'] in serialized]
+    return {'artifacts':related,'start_offset':offset,'previous_offset':max(0,offset-8) if offset>0 else None,'items':page[:8], 'next_offset':offset+8 if len(page)>8 else None,
             'branch': selected['id'] if selected else 'all',
             'branches':[{'id':p['id'], 'title':f"分支 {i+1} · {p['timestamp'][:16].replace('T',' ')}"} for i,p in enumerate(paths)]}
 
@@ -98,7 +135,7 @@ class ReadableHTML(HTMLParser):
         if not self.hidden:self.parts.append(data)
 
 
-def artifacts(account_dir, identifier='', version='', offset=0):
+def artifacts(account_dir, identifier='', version='', offset=0, html_preview=False):
     path = account_dir / 'frames-000.zip'
     if not path.exists():return {'items':[], 'available':False}
     with zipfile.ZipFile(path) as archive:
@@ -113,6 +150,7 @@ def artifacts(account_dir, identifier='', version='', offset=0):
         version=version or item.get('active_version')
         if version not in {v['id'] for v in item.get('versions',[])}:raise ValueError('作品版本不存在')
         html=archive.read(item['_directory']+'/versions/'+version+'.html').decode('utf-8',errors='replace')
+        if html_preview:return {'html':html,'version':version,'title':next(v.get('title','作品') for v in item['versions'] if v['id']==version)}
         parser=ReadableHTML();parser.feed(html)
         import re
         text=re.sub(r'\n[ \t]*\n(?:[ \t]*\n)+','\n\n',''.join(parser.parts)).strip()
@@ -139,3 +177,42 @@ def conversation_title(item, messages):
                 names.append(name)
     if names:return ('附件：'+names[0]+' · '+(stamp[:10] or identity))[:180]
     return ('对话 · '+(stamp or '日期未知')+' · '+identity).strip(' ·')
+
+
+def library_state(catalog):
+    path=catalog.data/'library-state.json'
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def apply_library_state(catalog):
+    for key,state in library_state(catalog).items():
+        if key in catalog.sessions:
+            row=catalog.sessions[key]
+            if state.get('title'):row['title']=state['title']
+            row['local_archived']=bool(state.get('archived'))
+
+
+def update_library(catalog, identifier, title=None, archived=None):
+    from import_core import atomic_json
+    row=catalog.get(identifier); state=library_state(catalog);record=state.setdefault(identifier,{})
+    if title is not None:
+        title=str(title).strip()
+        if not title or len(title)>180:raise ValueError('标题需为 1 至 180 个字符')
+        record['title']=title
+    if archived is not None:record['archived']=bool(archived)
+    atomic_json(catalog.data/'library-state.json',state);apply_library_state(catalog)
+    return row
+
+
+def library_page(catalog, params):
+    rows=catalog.list(query=params.get('query',''),source=params.get('source',''),project=params.get('project',''),
+                      status=params.get('status',''),review=params.get('review',''),code=params.get('code',''),
+                      date_from=params.get('from',''),date_to=params.get('to',''),size=max(1,len(catalog.sessions)))['items']
+    scope=params.get('scope','chats')
+    def missing_body(row):
+        return row.get('source')=='account' and row.get('content_available') is False
+    if scope=='missing':rows=[r for r in rows if missing_body(r)]
+    else:rows=[r for r in rows if not missing_body(r) and bool(r.get('local_archived'))==(scope=='archived')]
+    if scope=='starred':rows=[r for r in rows if r.get('review')=='useful']
+    page=max(1,int(params.get('page','1')));size=40
+    return {'items':rows[(page-1)*size:page*size],'total':len(rows),'page':page,'size':size}

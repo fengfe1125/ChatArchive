@@ -126,6 +126,12 @@ class Handler(Base):
             try:
                 if path=='/native/backup':self._json(service.snapshots[self._param(params,'id')].view())
                 elif path=='/native/download':self._json(service.jobs[self._param(params,'id')])
+                elif path=='/native/library':
+                    from account_recovery import library_page
+                    self._json(library_page(service.archive,{k:self._param(params,k) for k in params}))
+                elif path=='/native/artifact-preview':
+                    from account_recovery import artifacts
+                    self._json(artifacts(service.archive.account_dir,self._param(params,'id'),self._param(params,'version'),html_preview=True))
                 elif path=='/native/account-reading':
                     from account_recovery import account_page
                     self._json(account_page(service.archive,self._param(params,'id'),int(self._param(params,'offset','0')),self._param(params,'branch')))
@@ -133,6 +139,12 @@ class Handler(Base):
                     from account_recovery import artifacts
                     self._json(artifacts(service.archive.account_dir,self._param(params,'id'),self._param(params,'version'),int(self._param(params,'offset','0'))))
                 elif path=='/native/session':self._json(service.archive.get(self._param(params,'id')))
+                elif path=='/native/reading-navigation':
+                    identifier=self._param(params,'id')
+                    if service.archive.get(identifier)['source']=='account':
+                        from account_recovery import account_page
+                        self._json(account_page(service.archive,identifier,branch=self._param(params,'branch'),index_only=True))
+                    else:self._json(service.archive.reading_navigation(identifier))
                 elif path=='/native/messages':self._json(service.archive.reading_messages(self._param(params,'id'),int(self._param(params,'offset','0'))))
                 else:self._error('未知接口',404)
             except Exception as error:self._error(str(error))
@@ -147,6 +159,9 @@ class Handler(Base):
         try:
             body=self._body()
             if path=='/native/detect':value=service.detect(body.get('codex',''))
+            elif path=='/native/library/update':
+                from account_recovery import update_library
+                value=update_library(service.archive,body['id'],body.get('title'),body.get('archived'))
             elif path=='/native/source':value=describe(body['path'])
             elif path=='/native/discover':value=discover_sources(body['path'])
             elif path=='/native/download/start':

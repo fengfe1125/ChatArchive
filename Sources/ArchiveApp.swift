@@ -32,7 +32,7 @@ struct RootView:View {
             if model.loading {VStack(spacing:16){ProgressView();Text("正在启动本机数据引擎…").foregroundStyle(.secondary)}}
             else if model.offline {ContentUnavailableView {Label("档案暂时离线",systemImage:"externaldrive.badge.exclamationmark")} description:{Text(model.archivePath+"\n连接原磁盘，或重新选择档案目录。移动原文后，已有 Codex 交接路径可能需要重新定位。")} actions:{Button("重新连接"){model.perform{try await model.open(model.archivePath)}};Button("重新定位…"){model.chooseArchive()};Button("创建新档案"){model.offline=false;model.setup=true;model.step=0}}}
             else if model.setup {SetupView()}
-            else {LibraryView()}
+            else {ClaudeLibraryView()}
         }
         .overlay(alignment:.top){if model.busy {ProgressView("正在校验与建立索引…").padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)).padding()}}
         .alert("无法完成操作",isPresented:Binding(get:{model.error != nil},set:{if !$0{model.error=nil}})){Button("好"){model.error=nil}} message:{Text(model.error ?? "")}
