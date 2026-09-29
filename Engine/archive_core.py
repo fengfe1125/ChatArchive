@@ -18,7 +18,7 @@ from import_core import BackupIndex, atomic_json, parse_time, sha256
 FENCE = re.compile(r"(?:^|\n)(`{3,}|~{3,})([^\n]*)\n(.*?)(?:\n\1(?=\n|$)|$)", re.S)
 VISIBLE_KINDS = {"text"}
 ACCOUNT_CACHE_VERSION = 6
-READING_CHUNK_SIZE = 12000
+READING_CHUNK_SIZE = 4000
 
 
 def _reading_parts(event: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -227,6 +227,8 @@ class ArchiveCatalog:
         self._reconcile_account()
         self._build_search()
         self._apply_reviews()
+        from account_recovery import apply_library_state
+        apply_library_state(self)
 
     def _load_account(self) -> None:
         archive_path = self.account_dir / "conversations-000.zip"
@@ -402,6 +404,16 @@ class ArchiveCatalog:
         next_offset = offset + len(selected)
         return {"items": selected, "next_offset": next_offset if next_offset < row["visible_turns"] else None}
 
+    def reading_navigation(self, session_id: str) -> dict[str, Any]:
+        row = self.get(session_id)
+        if not row['valid_hash']:raise ValueError('备份哈希校验失败')
+        with sqlite3.connect(self.data / 'archive-search.sqlite') as connection:
+            records=connection.execute("""SELECT position, json_extract(payload, '$.role'),
+                substr(json_extract(payload, '$.text'), 1, 100)
+                FROM reading_message WHERE session_id=?
+                AND coalesce(json_extract(payload, '$.continuation'), 0)=0 ORDER BY position""", (session_id,)).fetchall()
+        return {'items':[{'id':str(position),'offset':position,'role':role,'preview':' '.join(text.split()) or '附件消息'} for position,role,text in records]}
+
     def reading_messages(self, session_id: str, offset: int = 0) -> dict[str, Any]:
         row = self.get(session_id)
         if not row['valid_hash']:
@@ -410,12 +422,12 @@ class ArchiveCatalog:
         connection = sqlite3.connect(self.data / 'archive-search.sqlite')
         try:
             records = connection.execute(
-                'SELECT payload FROM reading_message WHERE session_id=? AND position>=? ORDER BY position LIMIT 9',
+                'SELECT payload FROM reading_message WHERE session_id=? AND position>=? ORDER BY position LIMIT 5',
                 (session_id, offset)).fetchall()
         finally:
             connection.close()
-        return {'items': [json.loads(record[0]) for record in records[:8]],
-                'next_offset': offset + 8 if len(records) > 8 else None}
+        return {'items': [json.loads(record[0]) for record in records[:4]],
+                'next_offset': offset + 4 if len(records) > 4 else None}
 
     def code_items(self, session_id: str) -> list[dict[str, Any]]:
         row = self.get(session_id)

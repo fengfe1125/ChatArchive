@@ -14,9 +14,11 @@ struct Message: Decodable, Identifiable {
     var id: String { "\(index)" }; var index = 0
     let role: String; let text: String; let media: [Media]?
     let continuation: Bool?; let plain: Bool?; let segmented: Bool?
-    enum CodingKeys: String, CodingKey { case role,text,media,continuation,plain,segmented }
+    let message_id:String?; let versions:[MessageVersion]?; let version_index:Int?
+    enum CodingKeys: String, CodingKey { case role,text,media,continuation,plain,segmented,message_id,versions,version_index }
 }
-struct Media: Decodable { let name: String?; let text: String? }
+struct MessageVersion:Decodable,Identifiable {let id:String;let title:String;let message_id:String}
+struct Media: Decodable { let name: String?; let text: String?; let type:String? }
 struct CodeItem: Decodable, Identifiable { let id: String; let title: String; let origin: String; let completeness: String; let line: Int? }
 struct SourceItem: Identifiable { var id: String { path }; let path: String; let count: Int; let bytes: Int64; let modified: Double; var kind = "code"; var zipCount = 0; var selected = true
     var summary:String { kind == "account" ? "Chat · 账号聊天导出 · \(zipCount) 个 ZIP" : (kind == "mixed" ? "Chat + Code · \(count) 条 Code · \(zipCount) 个 ZIP" : "Code · \(count) 条会话") } }
@@ -99,13 +101,14 @@ extension ArchiveEngine {
     @Published var codeMetadata=""; @Published var query=""; @Published var project=""
     @Published var statusFilter=""; @Published var reviewFilter=""; @Published var codeFilter=""
     @Published var dateFrom=""; @Published var dateTo=""
+    @Published var libraryScope="chats"
     @Published var page=1; @Published var total=0; @Published var counts:[String:Int]=[:]
     @Published var messageNext:Int?; @Published var rawPageNext:Int?
     @Published var task:[String:Any]=[:]; @Published var taskVisible=false
     @Published var pendingImports:[String]=[]; @Published var confirmImport=false
     @Published var stage:[String:Any]=[:]; @Published var showStage=false
     @Published var restoredJobs:[[String:Any]]=[]
-    @Published var scrollIDs:[String:String]=[:]
+    var scrollIDs:[String:String]=[:]
     var lastBySurface:[String:String]=[:]; var requestSerial=0
     var sourcePaths:[String] { sources.filter(\.selected).map(\.path) }
     var taskRunning:Bool {task["status"] as? String == "running" || backup["status"] as? String == "running"}
@@ -215,8 +218,8 @@ extension ArchiveEngine {
         requestSerial+=1;let serial=requestSerial
         loadingSessions=true
         defer {if serial==requestSerial {loadingSessions=false}}
-        let values=["source":query.isEmpty ? surface : "","project":query.isEmpty ? project : "","query":query,"status":statusFilter,"review":reviewFilter,"code":codeFilter,"from":dateFrom,"to":dateTo,"page":String(page)]
-        let data=try await engine.call("/api/archive/sessions?"+values.map{"\($0.key)=\(escape($0.value))"}.joined(separator:"&"))
+        let values=["source":query.isEmpty ? surface : "","project":query.isEmpty ? project : "","query":query,"status":statusFilter,"review":reviewFilter,"code":codeFilter,"from":dateFrom,"to":dateTo,"page":String(page),"scope":libraryScope]
+        let data=try await engine.call("/native/library?"+values.map{"\($0.key)=\(escape($0.value))"}.joined(separator:"&"))
         guard serial==requestSerial else{return};let rows=try decode([ChatSession].self,data["items"] ?? []);sessions=append ? sessions+rows : rows;total=data["total"] as? Int ?? 0
     }
     func switchSurface() {
@@ -239,12 +242,11 @@ extension ArchiveEngine {
     }
     func openSession(_ row:ChatSession) async throws {
         selectionGeneration+=1;let generation=selectionGeneration
-        loadingMessages=false;messageError=nil
+        loadingMessages=false;messageError=nil;inspector=false
         active=row;surface=row.source;lastBySurface[row.source]=row.id;if previewPath==nil{UserDefaults.standard.set(row.id,forKey:"active-"+archivePath);UserDefaults.standard.set(lastBySurface,forKey:"lastBySurface")}
         messages=[];codeItems=[];raw=[];rawText=[:];rawNext=[:];codeContent="";codeMetadata="";before=nil;after=nil;selectedCode=nil;messageNext=0;rawPageNext=0
-        try await moreMessages()
+        if row.source == "code" {try await moreMessages()}
         guard generation==selectionGeneration,!Task.isCancelled else{return}
-        if inspector {try await loadDetails()}
     }
     func moreMessages() async throws {
         guard !loadingMessages,let id=active?.id,let offset=messageNext else{return}
@@ -261,6 +263,19 @@ extension ArchiveEngine {
             guard generation==selectionGeneration,!Task.isCancelled else{return}
             messageError=error.localizedDescription
         }
+    }
+    func jumpToMessage(_ offset:Int) async throws {
+        guard let id=active?.id else{return}
+        selectionGeneration+=1;let generation=selectionGeneration
+        loadingMessages=true;messageError=nil
+        defer{if generation==selectionGeneration{loadingMessages=false}}
+        do{
+            let data=try await engine.call("/native/messages?id=\(escape(id))&offset=\(offset)")
+            guard generation==selectionGeneration,!Task.isCancelled else{return}
+            var items=try decode([Message].self,data["items"] ?? [])
+            for i in items.indices{items[i].index=offset+i}
+            messages=items;messageNext=data["next_offset"] as? Int
+        }catch{if generation==selectionGeneration{messageError=error.localizedDescription}}
     }
     func loadDetails() async throws {guard let id=active?.id else{return};if detailMode==0{let data=try await engine.call("/api/archive/code?id=\(escape(id))");guard active?.id==id else{return};codeItems=try decode([CodeItem].self,data["items"] ?? [])}else if raw.isEmpty{try await moreRaw()}}
     func selectCode(_ item:CodeItem) async throws {guard let id=active?.id else{return};selectedCode=item.id;let value=try await engine.call("/api/archive/code/content?id=\(escape(id))&item=\(escape(item.id))");guard active?.id==id,selectedCode==item.id else{return};codeContent=value["content"] as? String ?? "";before=value["before"] as? String;after=value["after"] as? String;codeMetadata="\(item.title)\n\(item.origin) · \(item.completeness) · 源记录 \(item.line.map(String.init) ?? "—")"}

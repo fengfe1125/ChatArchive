@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[1]
 RUNTIME=Path(os.environ.get('ARCHIVE_PYTHON_RUNTIME',str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/python')))
 APP=ROOT/'dist/聊天档案.app';CONTENTS=APP/'Contents';RES=CONTENTS/'Resources'
 for directory in (CONTENTS/'MacOS',RES/'Engine',RES/'Python/bin'):directory.mkdir(parents=True,exist_ok=True)
-subprocess.run(['swiftc','-module-cache-path','/tmp/claude-archive-module-cache','-swift-version','5','-O','-target','arm64-apple-macos15.0','-parse-as-library','-framework','SwiftUI','-framework','AppKit',*[str(p) for p in sorted((ROOT/'Sources').glob('*.swift'))],'-o',str(CONTENTS/'MacOS/ClaudeArchive')],check=True)
+subprocess.run(['swiftc','-module-cache-path','/tmp/claude-archive-module-cache','-swift-version','5','-O','-target','arm64-apple-macos15.0','-parse-as-library','-framework','SwiftUI','-framework','AppKit','-framework','WebKit',*[str(p) for p in sorted((ROOT/'Sources').glob('*.swift'))],'-o',str(CONTENTS/'MacOS/ClaudeArchive')],check=True)
 for file in (ROOT/'Engine').glob('*.py'):shutil.copy2(file,RES/'Engine'/file.name)
 shutil.copy2(RUNTIME/'bin/python3.12',RES/'Python/bin/python3.12')
 shutil.copytree(RUNTIME/'lib/python3.12',RES/'Python/lib/python3.12',dirs_exist_ok=True,ignore=shutil.ignore_patterns('site-packages','__pycache__','test','tests','idlelib','tkinter','turtledemo','ensurepip','_tkinter*.so'))
@@ -18,7 +18,7 @@ for size in (16,32,128,256,512):
   pixels=size*scale;suffix='@2x' if scale==2 else ''
   subprocess.run(['sips','-z',str(pixels),str(pixels),str(ROOT/'Design/app-icon-1024.png'),'--out',str(iconset/f'icon_{size}x{size}{suffix}.png')],check=True,capture_output=True)
 subprocess.run(['iconutil','-c','icns',str(iconset),'-o',str(RES/'AppIcon.icns')],check=True)
-with (CONTENTS/'Info.plist').open('wb') as f:plistlib.dump({'CFBundleName':'聊天档案','CFBundleDisplayName':'聊天档案','CFBundleIdentifier':'local.chatarchive.desktop','CFBundleExecutable':'ClaudeArchive','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0.7','CFBundleVersion':'8','CFBundleIconFile':'AppIcon','LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True,'NSPrincipalClass':'NSApplication','NSAppTransportSecurity':{'NSAllowsLocalNetworking':True},'NSHumanReadableCopyright':'Local Chat Archive · Includes Python Software Foundation licensed CPython.'},f)
+with (CONTENTS/'Info.plist').open('wb') as f:plistlib.dump({'CFBundleName':'聊天档案','CFBundleDisplayName':'聊天档案','CFBundleIdentifier':'local.chatarchive.desktop','CFBundleExecutable':'ClaudeArchive','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.1.3','CFBundleVersion':'15','CFBundleIconFile':'AppIcon','LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True,'NSPrincipalClass':'NSApplication','NSAppTransportSecurity':{'NSAllowsLocalNetworking':True},'NSHumanReadableCopyright':'Local Chat Archive · Includes Python Software Foundation licensed CPython.'},f)
 # Standalone runtime must have no Homebrew or user-directory dynamic dependencies.
 for binary in [CONTENTS/'MacOS/ClaudeArchive',RES/'Python/bin/python3.12',*list((RES/'Python').rglob('*.so'))]:
  deps=subprocess.check_output(['otool','-L',str(binary)],text=True)

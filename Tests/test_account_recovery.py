@@ -55,6 +55,10 @@ class StructureTests(unittest.TestCase):
             result=account_page(Catalog(),'x')
             self.assertEqual(result['branch'],'new')
             self.assertEqual([m['text'] for m in result['items']],['question','before','','after'])
+            navigation=account_page(Catalog(),'x',index_only=True)['items']
+            self.assertEqual([e['id'] for e in navigation],['q','new'])
+            self.assertEqual([e['offset'] for e in navigation],[0,1])
+            self.assertEqual([e['id'] for e in account_page(Catalog(),'x',branch='old',index_only=True)['items']],['q','old'])
             old=account_page(Catalog(),'x',branch='old')
             self.assertEqual([m['text'] for m in old['items']],['question','old answer'])
 
@@ -70,3 +74,48 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(conversation_title({'uuid':'abcdef123','created_at':'2026-09-01T12:30:00Z'},[]),'对话 · 2026-09-01 12:30 · abcdef')
         messages=[{'role':'user','text':'','media':[{'name':'draft.txt','type':'file'}]}]
         self.assertIn('附件：draft.txt',conversation_title({'created_at':'2026-09-01'},messages))
+
+class LibraryStateTests(unittest.TestCase):
+    def test_rename_archive_restore_are_local_and_searchable(self):
+        import tempfile
+        from account_recovery import update_library,library_page,apply_library_state
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            class Catalog:
+                data=Path(tmp)
+                sessions={'a':{'id':'a','title':'Original','review':''}}
+                def get(self,key):return self.sessions[key]
+                def list(self,**params):return {'items':list(self.sessions.values())}
+            c=Catalog()
+            update_library(c,'a',title='Local title',archived=True)
+            self.assertEqual(library_page(c,{})['total'],0)
+            self.assertEqual(library_page(c,{'scope':'archived'})['items'][0]['title'],'Local title')
+            c.sessions['a']['title']='Original';apply_library_state(c)
+            self.assertEqual(c.sessions['a']['title'],'Local title')
+            update_library(c,'a',archived=False)
+            self.assertEqual(library_page(c,{})['total'],1)
+
+    def test_missing_chat_bodies_are_grouped_without_mutation(self):
+        from account_recovery import library_page
+        class Catalog:
+            sessions={str(i):row for i,row in enumerate([
+                {'id':'empty','source':'account','content_available':False,'review':'useful'},
+                {'id':'full','source':'account','content_available':True},
+                {'id':'code','source':'code','content_available':False}])}
+            def list(self,**params):return {'items':list(self.sessions.values())}
+        catalog=Catalog()
+        self.assertEqual([r['id'] for r in library_page(catalog,{})['items']],['full','code'])
+        self.assertEqual(library_page(catalog,{'scope':'starred'})['total'],0)
+        self.assertEqual([r['id'] for r in library_page(catalog,{'scope':'missing'})['items']],['empty'])
+        self.assertEqual(len(catalog.sessions),3)
+        self.assertNotIn('local_archived',catalog.sessions['0'])
+
+    def test_artifact_preview_returns_exact_version_source(self):
+        import tempfile,zipfile,json
+        from account_recovery import artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            html='<button onclick="this.textContent=42">Click</button>'
+            with zipfile.ZipFile(Path(tmp)/'frames-000.zip','w') as z:
+                z.writestr('artifacts/a/artifact.json',json.dumps({'id':'a','active_version':'v','versions':[{'id':'v','title':'Saved'}]}))
+                z.writestr('artifacts/a/versions/v.html',html)
+            self.assertEqual(artifacts(Path(tmp),'a',html_preview=True)['html'],html)
