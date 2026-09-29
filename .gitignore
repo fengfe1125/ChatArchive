@@ -1,0 +1,19 @@
+.build/
+.swiftpm/
+dist/
+.validation/
+__pycache__/
+*.pyc
+
+.versions/
+.DS_Store
+
+# Local validation evidence and machine-specific regression script
+VALIDATION.json
+scripts/verify_real_archive.py
+Design/icon-preview.png
+Design/installed-icon.png
+.env
+.env.*
+*.pem
+*.key
