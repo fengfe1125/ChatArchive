@@ -13,8 +13,8 @@ from native_backup import Snapshot, describe, destination_info, discover_sources
 class NativeService(ImportService):
     def __init__(self):
         self.token=secrets.token_urlsafe(32);self.jobs={};self.lock=threading.RLock()
-        self.archive=None;self.index=None;self.staging=None;self.snapshots={};self.root=None
-    def detect(self, executable=''):
+        self.archive=None;self.index=None;self.staging=None;self.snapshots={};self.root=None;self.cancel_imports=threading.Event()
+    def detect(self, executable='', claude=''):
         candidates=[executable,shutil.which('codex'),str(Path.home()/'.npm-global/bin/codex'),'/opt/homebrew/bin/codex','/usr/local/bin/codex']
         path=next((str(Path(p).expanduser()) for p in candidates if p and Path(p).expanduser().is_file() and os.access(Path(p).expanduser(),os.X_OK)),None)
         result={'path':path or '', 'version':'未安装','login':'待检查','interface':'待检查'}
@@ -37,7 +37,11 @@ class NativeService(ImportService):
                     item=describe(directory)
                     if item['files']:sources.append(item)
                 except (OSError,ValueError):pass
-        return {'codex':result,'sources':sources}
+        from claude_bridge import detect_claude
+        claude_result=detect_claude(claude)
+        if claude:os.environ['CLAUDE_ARCHIVE_CLAUDE']=str(Path(claude).expanduser())
+        elif claude_result['path']:os.environ['CLAUDE_ARCHIVE_CLAUDE']=claude_result['path']
+        return {'codex':result,'claude_code':claude_result,'sources':sources}
     def open_archive(self,body):
         if any(job['status']=='running' for job in self.jobs.values()):raise ValueError('请等待任务结束后切换档案')
         root=Path(body['path']).expanduser().resolve()
@@ -88,13 +92,18 @@ class NativeService(ImportService):
                 atomic_json(target,{**incoming,**existing});copied.append(name)
         self.archive.refresh()
         return {'copied':copied}
-    def import_batch(self,ids):
+    def import_batch(self,ids,destination='codex',branches=None):
+        from target_imports import DESTINATIONS,import_to_target
         if not self.archive:raise ValueError('请先打开档案')
+        if destination not in DESTINATIONS:raise ValueError('未知的导入目的地')
+        if not isinstance(ids,list) or not ids or not all(isinstance(s,str) for s in ids):raise ValueError('请选择会话')
+        branches={} if branches is None else branches
+        if not isinstance(branches,dict) or any(s not in ids or not isinstance(b,str) for s,b in branches.items()):raise ValueError('分支选择无效')
+        for sid in ids:self.archive.get(sid)
         with self.lock:
-            if any(j['status']=='running' for j in self.jobs.values()):raise ValueError('请等待当前任务结束')
+            if any(j['status']=='running' for j in self.jobs.values()) or any(s.view()['status']=='running' for s in self.snapshots.values()):raise ValueError('请等待当前任务结束')
             key=uuid.uuid4().hex
-            self.jobs[key]={'kind':'import','status':'running','ids':list(dict.fromkeys(ids)),'total':len(set(ids)),'completed':0,'results':[],'errors':[]}
-            if not ids:raise ValueError('请选择会话')
+            self.jobs[key]={'kind':'import','status':'running','destination':destination,'branches':dict(branches),'ids':list(dict.fromkeys(ids)),'total':len(set(ids)),'completed':0,'results':[],'errors':[],'entries':{}}
         journal=self.archive.data/'native-import-jobs.json'
         def persist():atomic_json(journal,{k:v for k,v in self.jobs.items() if v.get('kind')=='import'})
         persist()
@@ -102,17 +111,28 @@ class NativeService(ImportService):
             from codex_bridge import make_context_thread,make_account_context_thread
             try:
                 for sid in self.jobs[key]['ids']:
+                    if self.cancel_imports.is_set():break
                     try:
                         self.archive.reconcile();row=self.archive.get(sid)
                         if not row['valid_hash']:raise ValueError('源文件校验失败')
                         if row['source']=='account' and not row['content_available']:raise ValueError('没有可恢复正文')
-                        if row['status'] in ('present','archived'):result={'status':'skipped','thread_id':row.get('destination_thread_id')}
-                        else:result=make_context_thread(self.index,row['code_id']) if row['source']=='code' else make_account_context_thread(self.archive,sid)
-                        self.jobs[key]['results'].append({'id':sid,**result})
+                        if destination=='codex':
+                            if row['status'] in ('present','archived'):result={'status':'skipped','thread_id':row.get('destination_thread_id')}
+                            else:result=make_context_thread(self.index,row['code_id']) if row['source']=='code' else make_account_context_thread(self.archive,sid)
+                        else:
+                            def progress(record):
+                                self.jobs[key]['entries'][sid]=record;persist()
+                            result=import_to_target(self.archive,sid,destination,branches.get(sid,''),self.cancel_imports,progress)
+                        self.jobs[key]['results'].append({'id':sid,'title':row['title'],'destination':destination,**result})
                     except Exception as error:self.jobs[key]['errors'].append({'id':sid,'error':str(error)})
                     self.jobs[key]['completed']+=1;persist()
                 self.archive.reconcile()
-            finally:self.jobs[key]['status']='completed';persist()
+            finally:
+                status='interrupted' if self.cancel_imports.is_set() else 'completed'
+                # Publish completion only after the terminal journal is durable.
+                final={**self.jobs[key],'status':status}
+                atomic_json(journal,{k:final if k==key else v for k,v in self.jobs.items() if v.get('kind')=='import'})
+                self.jobs[key]['status']=status
         threading.Thread(target=run,daemon=True).start()
         return {'job_id':key}
 
@@ -158,7 +178,7 @@ class Handler(Base):
         if not self._authenticated() or not self._csrf():return self._error('未授权',403)
         try:
             body=self._body()
-            if path=='/native/detect':value=service.detect(body.get('codex',''))
+            if path=='/native/detect':value=service.detect(body.get('codex',''),body.get('claude',''))
             elif path=='/native/library/update':
                 from account_recovery import update_library
                 value=update_library(service.archive,body['id'],body.get('title'),body.get('archived'))
@@ -182,7 +202,12 @@ class Handler(Base):
             elif path=='/native/backup/cancel':service.snapshots[body['id']].cancel.set();value={'ok':True}
             elif path=='/native/open':value=service.open_archive(body)
             elif path=='/native/migrate':value=service.migrate(body['path'])
-            elif path=='/native/import':value=service.import_batch(body['ids'])
+            elif path=='/native/import':
+                branches=body.get('branches',{})
+                if 'branch' in body:
+                    if not isinstance(body['ids'],list) or len(body['ids'])!=1:raise ValueError('单条分支参数只支持一条聊天')
+                    branches={body['ids'][0]:body['branch']}
+                value=service.import_batch(body['ids'],body.get('destination','codex'),branches)
             elif path=='/native/export':
                 if not service.archive:raise ValueError('请先打开档案')
                 key=uuid.uuid4().hex;ids=body.get('ids');mode=body.get('mode','readable');destination=Path(body['destination']).resolve()
@@ -204,6 +229,7 @@ if __name__=='__main__':
     print(json.dumps({'port':server.server_port,'token':service.token}),flush=True)
     def parent_watch():
         sys.stdin.buffer.read()
+        service.cancel_imports.set()
         for snapshot in service.snapshots.values():snapshot.cancel.set()
         server.shutdown()
     threading.Thread(target=parent_watch,daemon=True).start()

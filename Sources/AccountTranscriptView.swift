@@ -77,10 +77,11 @@ struct AccountTranscriptView:View {
                     if branches.count>1{Menu{Button("最近结束的分支"){branch=""};ForEach(branches){b in Button(b.title){branch=b.id}};Divider();Button("全部原始分支"){branch="all"}}label:{Label("\(branches.count) 个分支",systemImage:"arrow.triangle.branch")}.font(.caption).help("导出未保存当时选中的分支，默认选择最后结束的分支")}
                     Spacer();Text("本地历史记录").font(.caption).foregroundStyle(.secondary)
                 }
-                HStack(alignment:.center,spacing:12){Text("继续这段对话").foregroundStyle(.secondary);Spacer();Button{if let row=model.active{model.pendingImports=[row.id];model.confirmImport=true}}label:{HStack{Text("转到 Codex");Image(systemName:"arrow.up")}.font(.callout).padding(.horizontal,12).padding(.vertical,8).background(Color.primary.opacity(0.07),in:Capsule())}.buttonStyle(.plain).disabled(model.active?.readable != true || model.taskRunning)}.padding(18).background(Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:20)).overlay(RoundedRectangle(cornerRadius:20).stroke(Color.primary.opacity(0.12)))
+                HStack(alignment:.center,spacing:12){Text("继续这段对话").foregroundStyle(.secondary);Spacer();Button{if let row=model.active{model.beginImport([row.id],branch:branch)}}label:{HStack{Text("继续这段聊天…");Image(systemName:"arrow.up")}.font(.callout).padding(.horizontal,12).padding(.vertical,8).background(Color.primary.opacity(0.07),in:Capsule())}.buttonStyle(.plain).disabled(model.active?.readable != true || model.taskRunning)}.padding(18).background(Color.primary.opacity(0.025),in:RoundedRectangle(cornerRadius:20)).overlay(RoundedRectangle(cornerRadius:20).stroke(Color.primary.opacity(0.12)))
             }.padding(.horizontal,32).padding(.bottom,14).frame(maxWidth:800).frame(maxWidth:.infinity)
         }
         .task(id:branch){
+            model.readingBranches[sessionID]=branch
             generation+=1;loading=false;messages=[];locations=[];previous=nil;next=nil;position=nil;jumpTarget=nil
             await load(offset:-1);bottomRequest+=1
             do{let data=try await model.engine.call("/native/reading-navigation?id=\(model.escape(sessionID))&branch=\(model.escape(branch))");try Task.checkCancellation();locations=try decode([MessageLocation].self,data["items"] ?? [])}

@@ -11,6 +11,7 @@ struct ClaudeLibraryView:View {
     @State private var renameTarget:ChatSession?
     @State private var renameText=""
     @State private var filtering=false
+    @State private var selecting=false
     @FocusState private var searchFocused:Bool
     var paper:Color{scheme == .dark ? Color(nsColor:.textBackgroundColor) : Color(red:0.975,green:0.968,blue:0.949)}
     var sidePaper:Color{scheme == .dark ? Color(nsColor:.windowBackgroundColor) : Color(red:0.94,green:0.933,blue:0.915)}
@@ -21,6 +22,7 @@ struct ClaudeLibraryView:View {
                 HStack(spacing:14){
                     Button{sidebar.toggle()}label:{Image(systemName:"sidebar.left")}.help("显示或隐藏侧栏")
                     HStack(spacing:4){modeButton("Chat","account");modeButton("Code","code")}.padding(4).background(Color.primary.opacity(0.045),in:Capsule())
+                    Button{selecting.toggle()}label:{Image(systemName:selecting ? "checkmark.circle.fill" : "checklist")}.help("选择多条")
                     Spacer()
                     if let active=model.active,screen != "artifacts" {
                         Text(active.title).font(.system(size:14,weight:.medium)).lineLimit(1).frame(maxWidth:380)
@@ -87,6 +89,7 @@ struct ClaudeLibraryView:View {
                     if model.sessions.count<model.total{Button("加载更多"){model.page+=1;model.perform{try await model.loadSessions(append:true)}}.buttonStyle(.plain).font(.caption).padding(10)}
                 }.padding(.horizontal,10)
             }
+            if selecting{HStack{Text("已选 \(model.selection.count) 条").font(.caption);Spacer();Button("继续聊天…"){model.beginImport(Array(model.selection).sorted())}.disabled(model.selection.isEmpty || model.taskRunning)}.padding(12)}
             Spacer(minLength:0)
             Divider().padding(.horizontal,12)
             navigation("缺失正文","doc.questionmark",selected:model.libraryScope=="missing"){
@@ -98,10 +101,13 @@ struct ClaudeLibraryView:View {
     }
     @ViewBuilder var rows:some View {
         ForEach(model.sessions){row in
+            HStack(spacing:2){
+            if selecting{Toggle("选择 \(row.title)",isOn:Binding(get:{model.selection.contains(row.id)},set:{if $0{model.selection.insert(row.id)}else{model.selection.remove(row.id)}})).labelsHidden().toggleStyle(.checkbox)}
             Button{screen="chats";model.selectSession(row)}label:{
                 HStack(spacing:8){VStack(alignment:.leading,spacing:4){Text(row.title).font(.system(size:13)).lineLimit(1);if row.content_available==false{Text("导出缺少正文").font(.system(size:10)).foregroundStyle(.secondary)}};Spacer(minLength:0);if row.review=="useful"{Image(systemName:"star.fill").font(.system(size:10)).foregroundStyle(.secondary)}}
                 .padding(.horizontal,10).padding(.vertical,9).frame(maxWidth:.infinity,alignment:.leading).background(model.active?.id==row.id && screen != "artifacts" ? Color.primary.opacity(0.08):.clear,in:RoundedRectangle(cornerRadius:7)).contentShape(Rectangle())
             }.buttonStyle(.plain).help(row.title).contextMenu{sessionActions(row)}
+            }
         }
         if model.sessions.isEmpty && !model.loadingSessions{Text("没有符合条件的聊天").font(.caption).foregroundStyle(.secondary).padding(10)}
     }
@@ -113,13 +119,15 @@ struct ClaudeLibraryView:View {
     func switchMode(_ source:String){screen="chats";selectedArtifact=nil;model.libraryScope="chats";if model.surface != source{model.surface=source;model.switchSurface()}else{scope("chats")}}
     func scope(_ value:String){screen="chats";model.libraryScope=value;model.page=1;model.perform{try await model.loadSessions()}}
     @ViewBuilder func sessionActions(_ row:ChatSession)->some View {
+        ForEach(ImportDestination.allCases){target in Text("\(target.title) · \(row.statusName(for:target))")}
+        Divider()
         Button("重命名…"){renameText=row.title;renameTarget=row}
         Button(row.review=="useful" ? "取消收藏" : "收藏"){model.perform{_=try await model.engine.call("/api/archive/review",["id":row.id,"review":row.review=="useful" ? "" : "useful"]);try await model.loadSessions()}}
         Button(model.libraryScope=="archived" ? "恢复到聊天" : "归档"){update(row,archived:model.libraryScope != "archived")}
         Divider()
         Button("导出 Markdown…"){model.export(ids:[row.id],mode:"readable")}
         Button("导出完整记录…"){model.export(ids:[row.id],mode:"complete")}
-        Button("在 Codex 中继续…"){model.pendingImports=[row.id];model.confirmImport=true}.disabled(!row.readable || model.taskRunning)
+        Button("继续这段聊天…"){model.beginImport([row.id])}.disabled(!row.readable || model.taskRunning)
         if row.source=="code"{Button("官方 /import…"){model.perform{try await model.stageSelection([row.id])}}}
         Button("查看原始记录"){model.perform{try await model.openSession(row);model.detailMode=1;model.inspector=true;try await model.loadDetails()}}
     }

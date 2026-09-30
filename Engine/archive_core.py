@@ -229,6 +229,8 @@ class ArchiveCatalog:
         self._apply_reviews()
         from account_recovery import apply_library_state
         apply_library_state(self)
+        from target_imports import reconcile_targets
+        reconcile_targets(self)
 
     def _load_account(self) -> None:
         archive_path = self.account_dir / "conversations-000.zip"
@@ -363,6 +365,7 @@ class ArchiveCatalog:
         for row in self.sessions.values():
             if row["source"] != "account":
                 continue
+            row.update(status='new',destination_thread_id=None,import_method=None)
             record = records.get(f"{row['id']}|{row['sha256']}")
             if record and record.get("thread_id"):
                 row["destination_thread_id"] = record["thread_id"]
@@ -378,6 +381,8 @@ class ArchiveCatalog:
                 row["destination_thread_id"] = original.destination_thread_id
                 row["import_method"] = original.import_method
         self._reconcile_account()
+        from target_imports import reconcile_targets
+        reconcile_targets(self)
 
     def get(self, session_id: str) -> dict[str, Any]:
         if session_id not in self.sessions:

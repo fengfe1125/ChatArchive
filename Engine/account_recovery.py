@@ -205,9 +205,15 @@ def update_library(catalog, identifier, title=None, archived=None):
 
 
 def library_page(catalog, params):
+    from target_imports import DESTINATIONS,reconcile_targets
+    destination=params.get('destination','codex')
+    if destination not in DESTINATIONS:raise ValueError('未知的导入目的地')
+    if 'destination' in params:reconcile_targets(catalog)
     rows=catalog.list(query=params.get('query',''),source=params.get('source',''),project=params.get('project',''),
-                      status=params.get('status',''),review=params.get('review',''),code=params.get('code',''),
+                      status=params.get('status','') if destination=='codex' else '',review=params.get('review',''),code=params.get('code',''),
                       date_from=params.get('from',''),date_to=params.get('to',''),size=max(1,len(catalog.sessions)))['items']
+    if destination!='codex' and params.get('status'):
+        rows=[r for r in rows if r['imports'][destination]['status']==params['status']]
     scope=params.get('scope','chats')
     def missing_body(row):
         return row.get('source')=='account' and row.get('content_available') is False

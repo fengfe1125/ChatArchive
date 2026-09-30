@@ -19,7 +19,7 @@ extension Notification.Name {static let archiveSearch=Notification.Name("archive
     func applicationDidFinishLaunching(_ notification:Notification){NSApp.setActivationPolicy(.regular);NSApp.activate(ignoringOtherApps:true)}
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
         let model=ArchiveModel.shared
-        if model.taskRunning {let alert=NSAlert();alert.messageText="任务尚未结束";alert.informativeText="退出会中断当前任务。备份可在下次打开后恢复；Codex 导入将先核对已创建的会话。";alert.addButton(withTitle:"继续等待");alert.addButton(withTitle:"退出并稍后恢复");if alert.runModal() == .alertFirstButtonReturn{return .terminateCancel}}
+        if model.taskRunning {let alert=NSAlert();alert.messageText="任务尚未结束";alert.informativeText="退出会中断当前任务。备份可在下次打开后恢复；导入任务将先核对已创建的会话。";alert.addButton(withTitle:"继续等待");alert.addButton(withTitle:"退出并稍后恢复");if alert.runModal() == .alertFirstButtonReturn{return .terminateCancel}}
         model.engine.stop();return .terminateNow
     }
     func applicationWillTerminate(_ notification:Notification){ArchiveModel.shared.engine.stop()}
@@ -30,7 +30,7 @@ struct RootView:View {
     var body:some View {
         Group {
             if model.loading {VStack(spacing:16){ProgressView();Text("正在启动本机数据引擎…").foregroundStyle(.secondary)}}
-            else if model.offline {ContentUnavailableView {Label("档案暂时离线",systemImage:"externaldrive.badge.exclamationmark")} description:{Text(model.archivePath+"\n连接原磁盘，或重新选择档案目录。移动原文后，已有 Codex 交接路径可能需要重新定位。")} actions:{Button("重新连接"){model.perform{try await model.open(model.archivePath)}};Button("重新定位…"){model.chooseArchive()};Button("创建新档案"){model.offline=false;model.setup=true;model.step=0}}}
+            else if model.offline {ContentUnavailableView {Label("档案暂时离线",systemImage:"externaldrive.badge.exclamationmark")} description:{Text(model.archivePath+"\n连接原磁盘，或重新选择档案目录。移动原文后，已有会话的交接路径可能需要重新定位。")} actions:{Button("重新连接"){model.perform{try await model.open(model.archivePath)}};Button("重新定位…"){model.chooseArchive()};Button("创建新档案"){model.offline=false;model.setup=true;model.step=0}}}
             else if model.setup {SetupView()}
             else {ClaudeLibraryView()}
         }
@@ -38,7 +38,7 @@ struct RootView:View {
         .alert("无法完成操作",isPresented:Binding(get:{model.error != nil},set:{if !$0{model.error=nil}})){Button("好"){model.error=nil}} message:{Text(model.error ?? "")}
         .sheet(isPresented:$model.taskVisible){TaskView().environmentObject(model)}
         .sheet(isPresented:$model.showStage){StageView().environmentObject(model)}
-        .confirmationDialog("导入 \(model.pendingImports.count) 条聊天到 Codex？",isPresented:$model.confirmImport,titleVisibility:.visible){Button("创建 Codex 续聊会话"){model.perform{try await model.job("/native/import",["ids":model.pendingImports])}}} message:{Text("所选原文将保存在档案目录，并由已登录的 Codex 读取交接内容。已有会话会跳过；备份中的历史命令不会自动执行。")}
+        .sheet(isPresented:$model.confirmImport){ImportView().environmentObject(model)}
     }
 }
 
@@ -47,7 +47,7 @@ struct SetupView:View {
     let titles=["检测环境","选择聊天来源","选择备份位置","复制与验证"]
     var body:some View {
         VStack(alignment:.leading,spacing:0){
-            HStack{Image(systemName:"tray.full.fill").font(.largeTitle).foregroundStyle(.tint);VStack(alignment:.leading){Text("把聊天留在自己手里").font(.title2.bold());Text("聊天档案 · 本机备份与 Codex 续聊").foregroundStyle(.secondary)};Spacer();if !model.archivePath.isEmpty {Button("返回档案"){model.setup=false}.disabled(model.taskRunning)}}.padding(28)
+            HStack{Image(systemName:"tray.full.fill").font(.largeTitle).foregroundStyle(.tint);VStack(alignment:.leading){Text("把聊天留在自己手里").font(.title2.bold());Text("聊天档案 · 本机备份与继续聊天").foregroundStyle(.secondary)};Spacer();if !model.archivePath.isEmpty {Button("返回档案"){model.setup=false}.disabled(model.taskRunning)}}.padding(28)
             HStack{ForEach(0..<4){n in Label(titles[n],systemImage:n<model.step ? "checkmark.circle.fill" : "\(n+1).circle\(n==model.step ? ".fill" : "")").font(.callout).foregroundStyle(n==model.step ? Color.accentColor : Color.secondary);if n<3 {Divider().frame(height:16);Spacer()}}}.padding(.horizontal,30).padding(.bottom,20)
             Divider()
             Form {
@@ -109,13 +109,13 @@ struct LibraryView:View {
         .onReceive(NotificationCenter.default.publisher(for:.archiveSearch)){_ in visibility = .all;searchFocus=true}
     }
     @ViewBuilder var sessionRows:some View {
-        ForEach(model.sessions){row in HStack(alignment:.top,spacing:8){if selecting{Toggle("选择 \(row.title)",isOn:Binding(get:{model.selection.contains(row.id)},set:{if $0{model.selection.insert(row.id)}else{model.selection.remove(row.id)}})).labelsHidden().toggleStyle(.checkbox)};Button {model.selectSession(row)}label:{VStack(alignment:.leading,spacing:4){HStack{Text(row.title).lineLimit(2);if row.review=="useful"{Image(systemName:"star.fill").foregroundStyle(.orange).font(.caption)}};HStack{if !model.query.isEmpty{Text(row.source=="code" ? "Code" : "Chat")};Text(row.content_available==false ? "导出缺少正文" : (row.source=="account" ? String(row.last_at?.prefix(10) ?? "") : row.statusName))}.font(.caption2).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,3).contentShape(Rectangle())}.buttonStyle(.plain)}.listRowBackground(model.active?.id==row.id ? Color.accentColor.opacity(0.14) : Color.clear)}
+        ForEach(model.sessions){row in HStack(alignment:.top,spacing:8){if selecting{Toggle("选择 \(row.title)",isOn:Binding(get:{model.selection.contains(row.id)},set:{if $0{model.selection.insert(row.id)}else{model.selection.remove(row.id)}})).labelsHidden().toggleStyle(.checkbox)};Button {model.selectSession(row)}label:{VStack(alignment:.leading,spacing:4){HStack{Text(row.title).lineLimit(2);if row.review=="useful"{Image(systemName:"star.fill").foregroundStyle(.orange).font(.caption)}};HStack{if !model.query.isEmpty{Text(row.source=="code" ? "Code" : "Chat")};Text(row.content_available==false ? "导出缺少正文" : (row.source=="account" ? String(row.last_at?.prefix(10) ?? "") : row.statusName(for:model.filterDestination)))}.font(.caption2).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,3).contentShape(Rectangle())}.buttonStyle(.plain)}.listRowBackground(model.active?.id==row.id ? Color.accentColor.opacity(0.14) : Color.clear)}
         if model.sessions.count<model.total {Button("加载更多（\(model.sessions.count) / \(model.total)）"){model.page+=1;model.perform{try await model.loadSessions(append:true)}}}
         if model.loadingSessions {ProgressView("正在加载列表…")}
         if model.sessions.isEmpty && !model.loadingSessions{Text("没有符合条件的聊天").font(.caption).foregroundStyle(.secondary)}
     }
     @ViewBuilder var conversationActions:some View {
-        if let active=model.active {Text(active.statusName);Divider();ForEach([("useful","有用"),("later","待定"),("ignore","忽略"),("","清除标记")],id:\.0){value,title in Button(title){model.perform{try await model.review(value)}}};Divider();Button("查看原始记录"){model.inspector=true;model.detailMode=1;model.perform{try await model.loadDetails()}};Menu("导出当前聊天"){Button("阅读版 Markdown…"){model.export(ids:[active.id],mode:"readable")};Button("完整记录版 Markdown…"){model.export(ids:[active.id],mode:"complete")}};Button("导入 Codex 后续聊…"){model.pendingImports=[active.id];model.confirmImport=true}.disabled(!active.readable);if active.source=="code"{Button("近期官方 /import…"){model.perform{try await model.stageSelection([active.id])}}}}
+        if let active=model.active {Text(active.statusName(for:model.filterDestination));Divider();ForEach([("useful","有用"),("later","待定"),("ignore","忽略"),("","清除标记")],id:\.0){value,title in Button(title){model.perform{try await model.review(value)}}};Divider();Button("查看原始记录"){model.inspector=true;model.detailMode=1;model.perform{try await model.loadDetails()}};Menu("导出当前聊天"){Button("阅读版 Markdown…"){model.export(ids:[active.id],mode:"readable")};Button("完整记录版 Markdown…"){model.export(ids:[active.id],mode:"complete")}};Button("继续这段聊天…"){model.beginImport([active.id])}.disabled(!active.readable || model.taskRunning);if active.source=="code"{Button("近期官方 /import…"){model.perform{try await model.stageSelection([active.id])}}}}
     }
-    @ViewBuilder var selectionActions:some View {Button("导出阅读版…"){model.export(ids:Array(model.selection),mode:"readable")};Button("导出完整记录版…"){model.export(ids:Array(model.selection),mode:"complete")};Button("导入 Codex…"){model.pendingImports=Array(model.selection);model.confirmImport=true};Button("近期官方 /import…"){model.perform{try await model.stageSelection(Array(model.selection))}};Divider();Button("清空选择"){model.selection=[]}}
+    @ViewBuilder var selectionActions:some View {Button("导出阅读版…"){model.export(ids:Array(model.selection),mode:"readable")};Button("导出完整记录版…"){model.export(ids:Array(model.selection),mode:"complete")};Button("继续这段聊天…"){model.beginImport(Array(model.selection))}.disabled(model.selection.isEmpty || model.taskRunning);Button("近期官方 /import…"){model.perform{try await model.stageSelection(Array(model.selection))}};Divider();Button("清空选择"){model.selection=[]}}
 }

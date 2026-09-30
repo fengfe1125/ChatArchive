@@ -51,7 +51,7 @@ struct AccountReadingView: View {
             }
             HStack {Image(systemName:"lock");Text("正在阅读备份");Spacer();Text("思考、工具和附件可展开查看")}.font(.caption).foregroundStyle(.secondary).padding(14)
         }.background(paper)
-        .task(id:branch){generation+=1;loading=false;messages=[];next=0;error=nil;await more()}
+        .task(id:branch){model.readingBranches[sessionID]=branch;generation+=1;loading=false;messages=[];next=0;error=nil;await more()}
         .sheet(isPresented:$showArtifacts){ArtifactLibraryView().environmentObject(model)}
     }
     @MainActor func more() async {

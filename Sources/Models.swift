@@ -2,13 +2,42 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+enum ImportDestination:String,CaseIterable,Identifiable {
+    case codex,claudeChat="claude_chat",claudeCode="claude_code"
+    var id:String{rawValue}
+    var title:String{switch self{case .codex:return "Codex";case .claudeChat:return "Claude 网页／桌面聊天";case .claudeCode:return "Claude Code"}}
+}
+func claudeDesktopResumeURL(_ record:[String:Any])->URL? {
+    guard record["destination"] as? String == "claude_code",
+          ["completed","existing"].contains(record["status"] as? String ?? ""),
+          let id=record["session_id"] as? String,UUID(uuidString:id) != nil,
+          record["session_path"] as? String != nil else{return nil}
+    // The official CLI's --desktop --resume route uses this local deep link.
+    var components=URLComponents()
+    components.scheme="claude";components.host="resume"
+    components.queryItems=[URLQueryItem(name:"session",value:id)]
+    return components.url
+}
+func claudeDesktopResumeCommand(_ record:[String:Any])->String? {
+    guard claudeDesktopResumeURL(record) != nil,let cwd=record["cwd"] as? String,
+          let executable=record["executable"] as? String,let id=record["session_id"] as? String,
+          cwd.hasPrefix("/"),executable.hasPrefix("/") else{return nil}
+    func quote(_ value:String)->String {"'"+value.replacingOccurrences(of:"'",with:"'\\''")+"'"}
+    return "cd \(quote(cwd)) && \(quote(executable)) --desktop --resume \(quote(id))"
+}
+struct DestinationImport:Decodable,Hashable {let status:String;let session_id:String?}
 struct ChatSession: Identifiable, Decodable, Hashable {
     let id: String; let source: String; let title: String; let project: String
     let last_at: String?; let status: String; let valid_hash: Bool
     let content_available: Bool?; let visible_turns: Int; let review: String?
     let destination_thread_id: String?
+    var imports:[String:DestinationImport]? = nil
     var readable: Bool { valid_hash && content_available != false }
     var statusName: String { ["new":"未导入","present":"已在 Codex","archived":"已归档","missing":"目标会话缺失","changed":"内容有更新","needs_review":"需核对"][status] ?? status }
+    func statusName(for destination:ImportDestination)->String {
+        let value=imports?[destination.rawValue]?.status ?? (destination == .codex ? status : "new")
+        return ["new":"未导入","present":"已在 \(destination.title)","prepared":"已准备资料","archived":"目标已归档","missing":"目标缺失","changed":"内容有更新","needs_review":"需核对"][value] ?? value
+    }
 }
 struct Message: Decodable, Identifiable {
     var id: String { "\(index)" }; var index = 0
@@ -83,6 +112,11 @@ extension ArchiveEngine {
     @Published var downloading=false; @Published var downloadMessage=""; @Published var downloadRoot="";
     @Published var scanningSources=false; @Published var sourceScanMessage=""
     @Published var codex:[String:String]=[:]; @Published var sources:[SourceItem]=[]
+    @Published var claudeCode:[String:String]=[:]
+    @Published var importDestination=ImportDestination(rawValue:UserDefaults.standard.string(forKey:"importDestination") ?? "") ?? .codex
+    @Published var openClaudeDesktopAfterImport=(UserDefaults.standard.object(forKey:"openClaudeDesktopAfterImport") as? Bool) ?? true
+    var openDesktopURL:(URL)->Bool={NSWorkspace.shared.open($0)}
+    @Published var filterDestination=ImportDestination.codex
     @Published var destination=""; @Published var freeSpace:Int64=0
     @Published var setup=true; @Published var step=0; @Published var archivePath=""
     @Published var offline=false; @Published var sourceChanged=false
@@ -106,6 +140,8 @@ extension ArchiveEngine {
     @Published var messageNext:Int?; @Published var rawPageNext:Int?
     @Published var task:[String:Any]=[:]; @Published var taskVisible=false
     @Published var pendingImports:[String]=[]; @Published var confirmImport=false
+    @Published var pendingBranches:[String:String]=[:]
+    var readingBranches:[String:String]=[:]
     @Published var stage:[String:Any]=[:]; @Published var showStage=false
     @Published var restoredJobs:[[String:Any]]=[]
     var scrollIDs:[String:String]=[:]
@@ -131,10 +167,40 @@ extension ArchiveEngine {
         detecting=true
         defer { detecting=false }
         try await engine.start()
-        let result=try await engine.call("/native/detect",["codex":path.isEmpty ? UserDefaults.standard.string(forKey:"codexPath") ?? "" : path])
+        let result=try await engine.call("/native/detect",["codex":path.isEmpty ? UserDefaults.standard.string(forKey:"codexPath") ?? "" : path,"claude":UserDefaults.standard.string(forKey:"claudePath") ?? ""])
         codex=result["codex"] as? [String:String] ?? [:]
+        claudeCode=result["claude_code"] as? [String:String] ?? [:]
         if !path.isEmpty {UserDefaults.standard.set(path,forKey:"codexPath")}
         for row in result["sources"] as? [[String:Any]] ?? [] {addSourceRow(row)}
+    }
+    func detectClaude(_ path:String="") async throws {
+        if !path.isEmpty{UserDefaults.standard.set(path,forKey:"claudePath")}
+        try await detect()
+    }
+    func beginImport(_ ids:[String],branch:String?=nil) {
+        guard !taskRunning else{return}
+        pendingImports=ids;pendingBranches=[:]
+        if ids.count==1,let id=ids.first,let selected=branch ?? readingBranches[id],!selected.isEmpty{pendingBranches[id]=selected}
+        confirmImport=true
+    }
+    func restoreImport(_ job:[String:Any]) {
+        guard !taskRunning else{return}
+        pendingImports=job["ids"] as? [String] ?? []
+        pendingBranches=job["branches"] as? [String:String] ?? [:]
+        importDestination=ImportDestination(rawValue:job["destination"] as? String ?? "codex") ?? .codex
+        confirmImport=true
+    }
+    var importBody:[String:Any]{["ids":pendingImports,"destination":importDestination.rawValue,"branches":pendingBranches]}
+    func submitImport() async throws {
+        let body=importBody
+        let openDesktop=importDestination == .claudeCode && pendingImports.count==1 && openClaudeDesktopAfterImport
+        if previewPath==nil{UserDefaults.standard.set(importDestination.rawValue,forKey:"importDestination");UserDefaults.standard.set(openClaudeDesktopAfterImport,forKey:"openClaudeDesktopAfterImport")}
+        confirmImport=false
+        try await job("/native/import",body)
+        if openDesktop,let results=task["results"] as? [[String:Any]],results.count==1,
+           let url=claudeDesktopResumeURL(results[0]),!openDesktopURL(url) {
+            error="会话已创建，但无法打开 Claude 桌面应用。请安装 Claude 桌面，或从结果中复制桌面打开命令。"
+        }
     }
     func addSourceRow(_ row:[String:Any]) {guard let path=row["path"] as? String,!sources.contains(where:{$0.path==path}) else{return};sources.append(SourceItem(path:path,count:row["sessions"] as? Int ?? 0,bytes:(row["bytes"] as? NSNumber)?.int64Value ?? 0,modified:row["modified"] as? Double ?? 0,kind:row["kind"] as? String ?? "code",zipCount:row["zip_count"] as? Int ?? 0))}
     func addSource(_ url:URL) {perform {
@@ -196,7 +262,7 @@ extension ArchiveEngine {
         busy=true;defer{busy=false}
         let value=try await engine.call("/native/open",body);archivePath=value["root"] as? String ?? path
         if previewPath==nil{UserDefaults.standard.set(archivePath,forKey:"archivePath")};restoredJobs=value["jobs"] as? [[String:Any]] ?? [];sourceChanged=value["source_changes"] as? Bool ?? false
-        setup=false;offline=false;active=nil;selection=[];page=1;project="";query=""
+        setup=false;offline=false;active=nil;selection=[];page=1;project="";query="";readingBranches=[:]
         try await loadInfo();try await loadSessions()
         if let id=UserDefaults.standard.string(forKey:"active-"+archivePath) {let row=try? await engine.call("/native/session?id=\(escape(id))");if let row,let session=try? decode(ChatSession.self,row){surface=session.source;try await openSession(session)}}
     }
@@ -218,7 +284,7 @@ extension ArchiveEngine {
         requestSerial+=1;let serial=requestSerial
         loadingSessions=true
         defer {if serial==requestSerial {loadingSessions=false}}
-        let values=["source":query.isEmpty ? surface : "","project":query.isEmpty ? project : "","query":query,"status":statusFilter,"review":reviewFilter,"code":codeFilter,"from":dateFrom,"to":dateTo,"page":String(page),"scope":libraryScope]
+        let values=["source":query.isEmpty ? surface : "","project":query.isEmpty ? project : "","query":query,"status":statusFilter,"destination":filterDestination.rawValue,"review":reviewFilter,"code":codeFilter,"from":dateFrom,"to":dateTo,"page":String(page),"scope":libraryScope]
         let data=try await engine.call("/native/library?"+values.map{"\($0.key)=\(escape($0.value))"}.joined(separator:"&"))
         guard serial==requestSerial else{return};let rows=try decode([ChatSession].self,data["items"] ?? []);sessions=append ? sessions+rows : rows;total=data["total"] as? Int ?? 0
     }
@@ -296,6 +362,18 @@ extension ArchiveEngine {
     func expandRaw(_ line:Int) async throws {guard let id=active?.id else{return};let offset=rawNext[line] ?? 0;if rawText[line] != nil && rawNext[line]==nil{return};let value=try await engine.call("/api/archive/raw/content?id=\(escape(id))&line=\(line)&offset=\(offset)");guard active?.id==id else{return};rawText[line,default:""]+=value["content"] as? String ?? "";rawNext[line]=value["next_offset"] as? Int}
     func review(_ value:String) async throws {guard let id=active?.id else{return};_=try await engine.call("/api/archive/review",["id":id,"review":value]);active=try decode(ChatSession.self,await engine.call("/native/session?id=\(escape(id))"));try await loadSessions()}
     func export(ids:[String]?,mode:String) {guard let dest=chooseFolder("选择 Markdown 导出位置") else{return};perform {var body:[String:Any]=["mode":mode,"destination":dest.path];body["ids"]=ids as Any? ?? NSNull();try await self.job("/native/export",body)}}
-    func job(_ path:String,_ body:[String:Any]) async throws {guard !taskRunning else{throw NSError(domain:"Task",code:1,userInfo:[NSLocalizedDescriptionKey:"已有任务正在运行"])};let result=try await engine.call(path,body);let id=result["job_id"] as? String ?? "";taskVisible=true;repeat{task=try await engine.call("/api/job?id=\(id)");if task["status"] as? String != "running" {break};try await Task.sleep(for:.seconds(1))}while true;try await loadSessions();if let active{let value=try await engine.call("/native/session?id=\(escape(active.id))");self.active=try decode(ChatSession.self,value)}}
+    func job(_ path:String,_ body:[String:Any]) async throws {
+        guard !taskRunning else{throw NSError(domain:"Task",code:1,userInfo:[NSLocalizedDescriptionKey:"已有任务正在运行"])}
+        task=["status":"running"];taskVisible=false
+        let result:[String:Any]
+        do{result=try await engine.call(path,body)}catch{task=[:];throw error}
+        let id=result["job_id"] as? String ?? "";taskVisible=true
+        do{repeat{task=try await engine.call("/api/job?id=\(id)");if task["status"] as? String != "running"{break};try await Task.sleep(for:.seconds(1))}while true}
+        catch{task=["status":"interrupted"];throw error}
+        task["id"]=id
+        if path == "/native/import"{restoredJobs.append(task)}
+        try await loadSessions()
+        if let active{let value=try await engine.call("/native/session?id=\(escape(active.id))");self.active=try decode(ChatSession.self,value)}
+    }
     func stageSelection(_ ids:[String]) async throws {guard ids.allSatisfy({$0.hasPrefix("code:")}) else{throw NSError(domain:"Stage",code:1,userInfo:[NSLocalizedDescriptionKey:"官方导入仅支持 Claude Code"])};let value=try await engine.call("/api/stage",["ids":ids.map{String($0.dropFirst(5))}]);stage=try await engine.call("/api/stage");stage["results"]=value["items"];showStage=true}
 }
