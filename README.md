@@ -21,7 +21,7 @@ ChatArchive (聊天档案) helps you choose which Claude and Claude Code convers
 - **Move selected conversations.** Continue one conversation or select several for a batch. Pick Claude Code, Codex, or files for a new Claude chat as the destination.
 - **Keep the rest available.** Unselected conversations stay in the local archive for reading later. Selection does not delete or rewrite the original records.
 
-The current source build is **1.2.2**. The latest published installer is **1.1.4**; the Claude continuation destinations described below are available in the source build and have not yet been released in a new DMG.
+The current release is **[1.2.2](https://github.com/fengfe1125/ChatArchive/releases/tag/v1.2.2)**, including all three continuation destinations and direct opening in Claude Code Desktop.
 
 ## Get started
 
